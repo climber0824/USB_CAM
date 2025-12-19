@@ -97,22 +97,28 @@ int release_interface(int fd, int interface) {
     return 0;
 }
 
-int submit_iso_urb(int fd, struct uvc_urb *urb_data, int endpoint, 
-                   int num_packets, int packet_size) {
-    memset(urb_data, 0, sizeof(*urb_data));
+int submit_iso_urb(int fd, struct usbdevfs_urb *urb, unsigned char *buffer, 
+                    int endpoint, int num_packets, int packet_size) {
+    // Clear the URB structure
+    memset(urb, 0, sizeof(struct usbdevfs_urb));
     
-    urb_data->urb.type = USBDEVFS_URB_TYPE_ISO;
-    urb_data->urb.endpoint = endpoint;
-    urb_data->urb.buffer = urb_data->buffer;
-    urb_data->urb.buffer_length = num_packets * packet_size;
-    urb_data->urb.number_of_packets = num_packets;
-    
+    urb->type = USBDEVFS_URB_TYPE_ISO;
+    urb->endpoint = endpoint;
+    urb->buffer = buffer;
+    urb->buffer_length = num_packets * packet_size;
+    urb->number_of_packets = num_packets;
+
     // Set up iso packets
     for (int i = 0; i < num_packets; i++) {
-        urb_data->iso_packets[i].length = packet_size;
+        urb->iso_frame_desc[i].length = packet_size;
+        urb->iso_frame_desc[i].actual_length = 0;
+        urb->iso_frame_desc[i].status = 0;
     }
-    
-    if (ioctl(fd, USBDEVFS_SUBMITURB, &urb_data->urb) < 0) {
+
+    printf("Submitting URB: endpoint=0x%02x, packets=%d, size=%d, total=%d\n",
+           endpoint, num_packets, packet_size, num_packets * packet_size);
+
+    if (ioctl(fd, USBDEVFS_SUBMITURB, urb) < 0) {
         perror("Failed to submit URB");
         return -1;
     }

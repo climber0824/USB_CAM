@@ -22,6 +22,19 @@ int main(int argc, char *argv[]) {
         printf("Try: sudo %s %s\n", argv[0], argv[1]);
         return 1;
     }
+
+    // Detach kernel drivers
+    struct usbdevfs_ioctl command;
+
+    // Detach from control interface
+    command.ifno = USB_VIDEO_CONTROL_INTERFACE;
+    command.ioctl_code = USBDEVFS_DISCONNECT;
+    command.data = NULL;
+    ioctl(fd_usb, USBDEVFS_IOCTL, &command);
+
+    // Detach from streaming interface
+    command.ifno = USB_VIDEO_STREAMING_INTERFACE;
+    ioctl(fd_usb, USBDEVFS_IOCTL, &command);
     
     printf("Opened camera: %s\n\n", argv[1]);
     
@@ -63,11 +76,38 @@ int main(int argc, char *argv[]) {
         goto cleanup;
     }
     
-    // Set alternate setting to enable streaming
-    printf("\nEnabling video streaming...\n");
-    if (set_interface_alt_setting(fd_usb, USB_VIDEO_STREAMING_INTERFACE, 1) < 0) {
+    printf("\n=== Camera Negotiated Settings ===\n");
+    printf("Max Payload Transfer Size: %u bytes\n", ctrl.dwMaxPayloadTransferSize);
+    printf("Max Video Frame Size: %u bytes\n", ctrl.dwMaxVideoFrameSize);
+    printf("Frame Interval: %u (%.2f fps)\n", ctrl.dwFrameInterval, 
+           10000000.0 / ctrl.dwFrameInterval);
+    printf("================================\n\n");
+
+    // Use this value directly
+    int packet_size = ctrl.dwMaxPayloadTransferSize;
+    if (packet_size > 3072) {
+        packet_size = 3072;  // Limit to safe maximum
+    }   
+
+    printf("\nFinding suitable alternate setting...\n");
+
+    // Try alternate settings from highest to lowest (higher -> more bandwidth)
+    int alt_setting = -1;
+    for (int alt = 11; alt >= 1; alt--) {
+        printf("Trying alternate setting %d...\n", alt);
+        if (set_interface_alt_setting(fd_usb, USB_VIDEO_STREAMING_INTERFACE, alt) == 0) {
+            alt_setting = alt;
+            printf("Successfully set alternate setting %d\n", alt);
+            break;
+        }
+    }
+
+    if (alt_setting < 0) {
+        printf("ERROR: Could not set any alternate setting!\n");
         goto cleanup;
     }
+    
+    printf("\nEnabling video streaming...\n");
     
     // Open output file for video data
     FILE *output = fopen("camera_output.raw", "wb");
@@ -82,13 +122,64 @@ int main(int argc, char *argv[]) {
     fflush(stdout);
     
     // Submit multiple URBs for continuous streaming
-    struct uvc_urb urbs[NUM_URBS];
+    struct usbdevfs_urb *urbs[NUM_URBS];
+    unsigned char *buffers[NUM_URBS];
     int endpoint = 0x81;
+    int num_packets = 16;
+    int max_buffer_size = num_packets * 3072;
+
+    if (alt_setting <= 3) {
+        packet_size = 512;
+        num_packets = 8;
+    }
+    else if (alt_setting <= 6) {
+        packet_size = 1024;
+        num_packets = 12;
+    }
+
+    // Calculate size needed for each URB
+    size_t urb_size = sizeof(struct usbdevfs_urb) + 
+                        num_packets * sizeof(struct usbdevfs_iso_packet_desc);
     
+    printf("\nAllocating URBs:\n");
+    printf("  URB structure size: %zu bytes\n", urb_size);
+    printf("  Buffer size: %d bytes\n", packet_size * num_packets);
+    printf("  packet_size: %d bytes\n", packet_size);    
+
+    // Make sure total size isn't too larger (about ~100KB per URB)
+    while (packet_size * num_packets > max_buffer_size && num_packets > 1) {
+        num_packets--;
+    }
+
+    printf("\nUsing: alt=%d, %d packets of %d bytes (total: %d bytes per URB\n",
+            alt_setting, num_packets, packet_size, packet_size * num_packets);
+
     // Submit initial URBs
     for (int i = 0; i < NUM_URBS; i++) {
-        if (submit_iso_urb(fd_usb, &urbs[i], endpoint, 32, 3072) < 0) {
+        // Allocate URB with space for iso_frame_desc array
+        urbs[i] = (struct usbdevfs_urb *)malloc(urb_size);
+        if (!urbs[i]) {
+            perror("Failed to allocate URB");
+            goto cleanup;
+        }
+
+        // Allocate seperate buffer for data
+        buffers[i] = (unsigned char *)malloc(packet_size * num_packets);
+        if (!buffers[i]) {
+            perror("Failed to allocate buffer");
+            free(urbs[i]);
+            goto cleanup;
+        }
+            
+
+        // Submit URB
+        if (submit_iso_urb(fd_usb, urbs[i], buffers[i], endpoint, num_packets, packet_size) < 0) {
             printf("Failed to submit initial URB %d\n", i);
+            free(urbs[i]);
+            free(buffers[i]);
+        }
+        else {
+            printf("Successfully sumbit URB %d\n", i);
         }
     }
     
@@ -133,11 +224,15 @@ int main(int argc, char *argv[]) {
     printf("\n\nCaptured approximately %d frames\n", frame_count);
     fclose(output);
     
-    // Cancel any pending URBs
+    // Cancel and free URBs
     for (int i = 0; i < NUM_URBS; i++) {
-        ioctl(fd_usb, USBDEVFS_DISCARDURB, &urbs[i].urb);
+        if (urbs[i]) {
+            ioctl(fd_usb, USBDEVFS_DISCARDURB, urbs[i]);
+            free(buffers[i]);
+            free(urbs[i]);
+        }
     }
-    
+
     // Disable streaming
     set_interface_alt_setting(fd_usb, USB_VIDEO_STREAMING_INTERFACE, 0);
     
@@ -152,3 +247,4 @@ cleanup:
     
     return 0;
 }
+#include "uvc_camera.h"

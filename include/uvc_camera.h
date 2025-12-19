@@ -2,6 +2,8 @@
 #define UVC_CAMERA_H
 
 #include <stdint.h>
+#include <stdio.h>
+#include <linux/usb/video.h>
 #include <linux/usbdevice_fs.h>
 
 // UVC specific definitions
@@ -18,31 +20,21 @@
 #define USB_VIDEO_CONTROL_INTERFACE    0
 #define USB_VIDEO_STREAMING_INTERFACE  1
 
-// UVC Video Probe and Commit Controls structure
-struct uvc_streaming_control {
-    uint16_t bmHint;
-    uint8_t  bFormatIndex;
-    uint8_t  bFrameIndex;
-    uint32_t dwFrameInterval;
-    uint16_t wKeyFrameRate;
-    uint16_t wPFrameRate;
-    uint16_t wCompQuality;
-    uint16_t wCompWindowSize;
-    uint16_t wDelay;
-    uint32_t dwMaxVideoFrameSize;
-    uint32_t dwMaxPayloadTransferSize;
-    uint32_t dwClockFrequency;
-    uint8_t  bmFramingInfo;
-    uint8_t  bPreferedVersion;
-    uint8_t  bMinVersion;
-    uint8_t  bMaxVersion;
-} __attribute__((packed));
+// URB for isochronous transfers
+#define MAX_ISO_PACKETS 32
+#define MAX_PACKET_SIZE 3072
+
 
 // URB (USB Request Block) for isochronous transfers
 struct uvc_urb {
     struct usbdevfs_urb urb;
-    struct usbdevfs_iso_packet_desc iso_packets[32];
-    unsigned char buffer[32 * 3072];
+};
+
+// Seperate buffer for actual data
+struct uvc_transfer {
+    struct uvc_urb urb_header;
+    struct usbdevfs_iso_packet_desc iso_packets[MAX_ISO_PACKETS];
+    unsigned char buffer[MAX_ISO_PACKETS * MAX_PACKET_SIZE];
 };
 
 // Function declarations
@@ -59,8 +51,8 @@ int claim_interface(int fd, int interface);
 
 int release_interface(int fd, int interface);
 
-int submit_iso_urb(int fd, struct uvc_urb *urb_data, int endpoint, 
-                   int num_packets, int packet_size);
+int submit_iso_urb(int fd, struct usbdevfs_urb *urb, unsigned char *buffer, 
+                    int endpoint, int num_packets, int packet_size);
 
 struct usbdevfs_urb *reap_urb(int fd, int timeout_ms);
 
