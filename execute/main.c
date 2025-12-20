@@ -1,12 +1,74 @@
-#include "uvc_camera.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <jpeglib.h>
+
+#include "uvc_camera.h"
+#include "image_processing.h"
+#include "mjpeg_parser.h"
+#include "urb_manager.h"
+#include "config.h"
 
 #define NUM_URBS 4
+
+// Global static buffers
+static MJPEGParser g_parser;
+static URGManager g_urb_mgr;
+static Image g_current_frame;
+static uint8_t g_jpeg_buffer[MAX_JPEG_SIZE];
+
+// JPEG decoder (using fixed buffer)
+static int jpeg_decode_to_image(const uint8_t *jpeg_data, int jpeg_size, Image *img) {
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+
+    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
+    jpeg_read_header(&cinfo, TRUE);
+    jpeg_start_decompress(&cinfo);
+
+    int width = cinfo.output_width;
+    int height = cinfo.output_height;
+    int channels = cinfo.output_components;
+
+    if (width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    image_init(img, width, height, channels);
+
+    while (cinfo.output_scanline < cinfo.output_height) {
+        unsigned char *row = img->data + cinfo.output_scanline * img->step;
+        jpeg_read_scanline(&cinfo, &row, 1);
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    return 0;
+}
+
+// Process frame callback
+static void process_frame(Image *img, int frame_number, FILE *output) {
+    if (!img || !img->valid) {
+        printf("precess frame error\n");
+        return;
+    }
+
+    image_adjust_brightness(img, 10);
+    image_adjust_contrast(img, 1.2);
+
+    if (output) {
+        fwrite(img->data, 1, img->height * img->step, output);
+    }
+}
+
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -14,6 +76,8 @@ int main(int argc, char *argv[]) {
         printf("Find your camera with: lsusb\n");
         return 1;
     }
+
+    const char *output_file = argc > 2 ? argv[2] : "output.rgb";
     
     // Open USB device
     int fd_usb = open(argv[1], O_RDWR);
@@ -108,16 +172,21 @@ int main(int argc, char *argv[]) {
     }
     
     printf("\nEnabling video streaming...\n");
+
+    // Initialize static structures
+    mjpeg_parser_init(&g_parser);
+    urb_manager_init(&g_urb_mgr);
+    image_init(&g_current_frame, 0, 0, 0);
     
     // Open output file for video data
-    FILE *output = fopen("camera_output.raw", "wb");
+    FILE *output = fopen("output_file", "wb");
     if (!output) {
         perror("Failed to open output file");
         goto cleanup;
     }
     
     printf("\nCapturing video stream (Ctrl+C to stop)...\n");
-    printf("Output: camera_output.raw\n");
+    printf("Output: %s\n", output_file);
     printf("Progress: ");
     fflush(stdout);
     
@@ -173,20 +242,28 @@ int main(int argc, char *argv[]) {
             
 
         // Submit URB
-        if (submit_iso_urb(fd_usb, urbs[i], buffers[i], endpoint, num_packets, packet_size) < 0) {
+        if (submit_iso_urb(fd_usb, &g_urb_mgr.urbs[i], buffers[i], endpoint, num_packets, packet_size) < 0) {
             printf("Failed to submit initial URB %d\n", i);
             free(urbs[i]);
             free(buffers[i]);
         }
         else {
+            g_urb_mgr.num_active++;
             printf("Successfully sumbit URB %d\n", i);
         }
     }
-    
+
+    if (g_urb_mgr.num_active == 0) {
+        printf("Failed to submit any URBs\n");
+        fclose(output);
+        goto cleanup;
+    }
+ 
     // Capture loop - capture 300 frames then stop
     int frame_count = 0;
     int max_frames = 300;
-    
+    printf("\nCapturing %d frames...\n", max_frames);
+
     while (frame_count < max_frames) {
         struct usbdevfs_urb *completed_urb = reap_urb(fd_usb, 1000);
         
@@ -195,20 +272,34 @@ int main(int argc, char *argv[]) {
             int offset = 0;
             for (int i = 0; i < completed_urb->number_of_packets; i++) {
                 int actual_length = completed_urb->iso_frame_desc[i].actual_length;
-                if (actual_length > 0) {
-                    process_video_data(
-                        (unsigned char*)completed_urb->buffer + offset,
-                        actual_length,
-                        output
-                    );
+                if (actual_length > 2) {
+                    uint8_t *data = completed_urb->buffer + offset;
+                    uint8_t header_len = data[0];
                     
-                    // Count frames
-                    if (((unsigned char*)completed_urb->buffer + offset)[1] & 0x02) {
-                        frame_count++;
-                        if (frame_count >= max_frames) break;
-                    }
+                    if (actual > header_len) {
+                        mjpeg_parser_add_data(&g_parser, data + header_len, 
+                                             actual - header_len);
+                    }    
                 }
                 offset += completed_urb->iso_frame_desc[i].length;
+            }
+
+            // Try to extract frames
+            int frame_size;
+            while (mjpeg_parser_get_frame(&g_parser, g_jpeg_buffer, &frame_size) > 0) {
+                // Decode JPEG to image
+                if (jpeg_decode_to_image(g_jpeg_buffer, frame_size, &g_current_frame) == 0) {
+                    // Process frame
+                    process_frame(&g_current_frame, frame_count, output);
+
+                    frame_count++;
+                    if (frame_count % 10 == 0) {
+                        printf("\rFrames: %d/%d", frame_count, MAX_FRAMES);
+                        fflush(stdout);
+                    }
+
+                    if (frame_count >= MAX_FRAMES) break;
+                }
             }
             
             // Resubmit the URB for continuous streaming
@@ -220,8 +311,25 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
     
     printf("\n\nCaptured approximately %d frames\n", frame_count);
+    printf("Output saved to: %s\n", output_file);
+
+    // Convert to MP4 using ffmpeg
+    if (g_current_frame.valid) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+                "ffmpeg -y -f rawvideo -pixel_format rgb24 -video_size %dx%d "
+                "-framerate %d -i %s -c:v libx264 -preset fast -crf 23 "
+                "-pix_fmt yuv420p output.mp4",
+                g_current_frame.width, g_current_frame.height, 
+                DEFAULT_FPS, output_file);
+        printf("\nConverting to MP4...\n");
+        system(cmd);
+        printf("MP4 created: output.mp4\n");
+    }
+
     fclose(output);
     
     // Cancel and free URBs
@@ -237,6 +345,7 @@ int main(int argc, char *argv[]) {
     set_interface_alt_setting(fd_usb, USB_VIDEO_STREAMING_INTERFACE, 0);
     
 cleanup:
+    set_interface_alt_setting(fd_usb, USB_VIDEO_STREAMING_INTERFACE, 0);
     release_interface(fd_usb, USB_VIDEO_STREAMING_INTERFACE);
     release_interface(fd_usb, USB_VIDEO_CONTROL_INTERFACE);
     close(fd_usb);
