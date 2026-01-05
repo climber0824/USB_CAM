@@ -2,6 +2,7 @@
 #define URB_MANAGER_H
 
 #include <linux/usbdevice_fs.h>
+#include <stdint.h>
 #include "config.h"
 
 typedef struct {
