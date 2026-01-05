@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include "image_processing.h"
 
 void image_init(Image *img, int width, int height, int channels) {
@@ -58,6 +59,21 @@ void image_to_grayscale(Image *img) {
     }
 }
 
+void image_adjust_brightness(Image *img, int delta) {
+    if (!img->valid) {
+        printf("img is not valid at brightness");
+        return;
+    }
+
+    int size = img->height * img->step;
+    for (int i = 0; i < size; i++) {
+        int val = img->data[i] + delta;
+        if (val < 0) val = 0;
+        if (val > 255) val = 255;
+        img->data[i] = (uint8_t)val;
+    }
+}
+
 void image_adjust_contrast(Image *img, float factor) {
     if (!img->valid) {
         printf("img is not valid at contrast");
@@ -76,7 +92,7 @@ void image_adjust_contrast(Image *img, float factor) {
 void image_set_pixel(Image *img, int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (!img->valid || x < 0 || x >= img->width || y < 0 || y >= img->height) return;
     if (img->channels != 3) {
-        print("Invalid channels when setting pixel");
+        printf("Invalid channels when setting pixel");
         return;
     }
     

@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include "mjpeg_parser.h"
 
 void mjpeg_parser_init(MJPEGParser *parser) {
@@ -46,20 +47,39 @@ int mjpeg_parser_get_frame(MJPEGParser *parser, uint8_t *frame_out, int *frame_s
     for (int i = 0; i < parser->buffer_size - 1; i++) {
         if (parser->buffer[i] == 0xFF && parser->buffer[i + 1] == 0xD8) {
             soi = i;
+            printf("Found SOI at position %d\n", soi);  // DEBUG
             break;
         }
     }
 
     if (soi < 0) {
-        printf("parger get frame: can't find soi");
-        return -1;
+        printf("parser get frame: can't find soi\n");
+        // Debug: show first few bytes of buffer
+        if (parser->buffer_size >= 16) {
+            printf("parser get frame: can't find SOI. Buffer has %d bytes. First 16 bytes: ",
+                   parser->buffer_size);
+            for (int i = 0; i < 16; i++) {
+                printf("%02X ", parser->buffer[i]);
+            }
+            printf("\n");
+        } else {
+            printf("parser get frame: can't find SOI. Buffer only has %d bytes\n",
+                   parser->buffer_size);
+        }
+        return 0;  // No SOI found
     }
 
     for (int i = soi + 2; i < parser->buffer_size - 1; i++) {
         if (parser->buffer[i] == 0xFF && parser->buffer[i + 1] == 0xD9) {
             eoi = i + 2;
+            printf("Found EOI at position %d\n", eoi);  // DEBUG
             break;
         }
+    }
+
+    if (eoi < 0) {
+        printf("Found SOI but no EOI yet (buffer: %d bytes)\n", parser->buffer_size);
+        return 0;  // No EOI yet
     }
 
     if (soi >= 0 && eoi > soi) {
@@ -68,7 +88,7 @@ int mjpeg_parser_get_frame(MJPEGParser *parser, uint8_t *frame_out, int *frame_s
 
         if (*frame_size > MAX_JPEG_SIZE) {
             // Too large, skip it
-            printf("Frame is too large\n");
+            printf("Frame too large: %d bytes, clearing buffer\n", *frame_size);
             parser->buffer_size = 0;
             return -1;
         }
@@ -84,6 +104,9 @@ int mjpeg_parser_get_frame(MJPEGParser *parser, uint8_t *frame_out, int *frame_s
         }
 
         parser->buffer_size = remaining;
+
+        printf("Extracted frame %d: %d bytes, %d bytes remaining\n",
+           parser->frame_count, *frame_size, remaining);
 
         return 1;   // Frame fount
     }

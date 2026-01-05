@@ -14,7 +14,7 @@ void urb_manager_init(URBManager *mgr) {
 }
 
 int urb_submit(int fd, URBBuffer *urb_buf, int endpoint, int num_packets, int packet_size) {
-    memset(&urb_buf->urb, 0, sizeof(struct urbdevfs_urb));
+    memset(&urb_buf->urb, 0, sizeof(struct usbdevfs_urb));
 
     urb_buf->urb.type = USBDEVFS_URB_TYPE_ISO;
     urb_buf->urb.endpoint = endpoint;
@@ -44,7 +44,7 @@ struct usbdevfs_urb* urb_reap(int fd) {
         if (errno == EAGAIN) {
             printf("Resource temporarily unavailable\n");
         }
-        else(errno == ENODEV) {
+        else if (errno == ENODEV) {
             printf("Operation not supported by device\n");
         }
         else {
