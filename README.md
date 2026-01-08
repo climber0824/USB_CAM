@@ -206,16 +206,15 @@ sudo ./uvc_camera /dev/bus/usb/001/003
 
 ```bash
 # Specify custom output file
-sudo ./uvc_camera /dev/bus/usb/001/003 my_capture.rgb
+sudo ./uvc_camera /dev/bus/usb/001/003 output.mp4
 
-# Capture with specific parameters (edit config.h first)
-# Then rebuild and run
+# Rebuild and run
 sudo ./uvc_camera /dev/bus/usb/001/003
 
 # Debug mode (if compiled with -DDEBUG)
 sudo ./uvc_camera /dev/bus/usb/001/003 2>&1 | tee debug.log
 ```
-
+<!--
 ### Setting Up udev Rules (No sudo required)
 
 ```bash
@@ -232,9 +231,11 @@ sudo udevadm trigger
 # Now run without sudo
 ./uvc_camera /dev/bus/usb/001/003
 ```
+-->
 
 ## ⚙️ Configuration
 
+<!--
 ### Memory Configuration
 
 Edit `include/config.h`:
@@ -258,6 +259,7 @@ Edit `include/config.h`:
 #define MJPEG_BUFFER_SIZE   (64 * 1024)
 #define NUM_URBS            2
 ```
+-->
 
 ### Camera Configuration
 
@@ -265,7 +267,7 @@ Edit in `execute/main.c`:
 
 ```c
 // Video format
-ctrl.bFormatIndex = 1;      // 1=MJPEG, 2=YUV (check with lsusb -v)
+ctrl.bFormatIndex = 2;      // 1=YUV, 2=MJPEG (check with lsusb -v)
 ctrl.bFrameIndex = 1;       // 1=highest res, higher=lower res
 ctrl.dwFrameInterval = 333333;  // Frame rate (333333 = 30fps)
 
@@ -276,6 +278,7 @@ ctrl.dwFrameInterval = 333333;  // Frame rate (333333 = 30fps)
 int endpoint = 0x81;
 ```
 
+<!--
 ## 🎨 Image Processing
 
 ### Available Operations
@@ -337,6 +340,7 @@ void process_frame(Image *img, int frame_number, FILE *output) {
     fwrite(img->data, 1, img->height * img->step, output);
 }
 ```
+-->
 
 ## 🔍 How It Works
 
@@ -459,8 +463,10 @@ set_interface_alt_setting(fd_usb, 1, 7);  // Try 7, 6, 5...
 # Solution 1: Run with sudo
 sudo ./uvc_camera /dev/bus/usb/001/003
 
+<!--
 # Solution 2: Add udev rule (permanent)
 # See "Setting Up udev Rules" section above
+-->
 ```
 
 #### No video output / blank frames
@@ -469,7 +475,7 @@ sudo ./uvc_camera /dev/bus/usb/001/003
 sudo lsusb -v -d VENDOR:PRODUCT | grep -i mjpeg
 
 # If camera uses YUV instead:
-# Edit main.c: ctrl.bFormatIndex = 2; (2 usually = YUV)
+# Edit main.c: ctrl.bFormatIndex = 2; (2 usually = MJPEG)
 # Need to add YUV→RGB conversion code
 
 # Check frame format with:
@@ -578,19 +584,20 @@ git add .
 git commit -m "Add: your feature description"
 git push origin feature/your-feature
 ```
-
+<!--
 ### Code Style
 - Follow Linux kernel coding style
 - Use 4 spaces for indentation
 - Max 100 characters per line
 - Comment complex logic
+-->
 
 ### Testing Checklist
 - [ ] Compiles without warnings
-- [ ] Tested on target hardware
+- [v] Tested on target hardware
 - [ ] Memory usage within limits
 - [ ] No memory leaks (valgrind)
-- [ ] Documentation updated
+- [v] Documentation updated
 
 ## 📄 License
 
